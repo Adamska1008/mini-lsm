@@ -18,10 +18,12 @@ pub struct LsmIterator {
 
 impl LsmIterator {
     pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        Ok(Self {
+        let mut iter = Self {
             is_valid: iter.is_valid(),
             inner: iter,
-        })
+        };
+        iter.move_to_non_delete()?;
+        Ok(iter)
     }
 
     fn next_inner(&mut self) -> Result<()> {

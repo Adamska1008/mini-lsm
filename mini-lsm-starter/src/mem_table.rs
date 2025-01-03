@@ -175,7 +175,7 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn is_valid(&self) -> bool {
-        !self.borrow_item().0.is_empty() && !self.borrow_item().1.is_empty()
+        !self.borrow_item().0.is_empty()
     }
 
     fn next(&mut self) -> Result<()> {
