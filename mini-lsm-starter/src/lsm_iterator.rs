@@ -1,7 +1,4 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
 use crate::{
     iterators::{merge_iterator::MergeIterator, StorageIterator},
@@ -106,9 +103,9 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
         if !self.iter.is_valid() {
             return Ok(());
         }
-        if let Err(e) = self.iter.next() {
+        if let e @ Err(_) = self.iter.next() {
             self.has_errored = true;
-            bail!("has errored");
+            return e;
         }
         Ok(())
     }
