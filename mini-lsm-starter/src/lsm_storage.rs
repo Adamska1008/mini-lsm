@@ -5,6 +5,7 @@ use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::{fs, vec};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -16,11 +17,14 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::iterators::StorageIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -238,6 +242,11 @@ impl LsmStorageInner {
     /// not exist.
     pub(crate) fn open(path: impl AsRef<Path>, options: LsmStorageOptions) -> Result<Self> {
         let path = path.as_ref();
+
+        if !path.exists() {
+            fs::create_dir(path)?;
+        }
+
         let state = LsmStorageState::create(&options);
 
         let compaction_controller = match &options.compaction_options {
@@ -280,19 +289,33 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let ro_state = self.state.read(); // ro for read-only
+        let ro_state = {
+            let guard = self.state.read(); // ro for read-only
+            Arc::clone(&guard)
+        };
         if let Some(value) = ro_state.memtable.get(key) {
             if value.len() == 0 {
                 return Ok(None);
             }
             return Ok(Some(value));
         }
-        for t in &ro_state.imm_memtables {
-            if let Some(value) = t.get(key) {
+        for mem_t in &ro_state.imm_memtables {
+            if let Some(value) = mem_t.get(key) {
                 if value.len() == 0 {
                     return Ok(None);
                 }
                 return Ok(Some(value));
+            }
+        }
+        for sst_id in &ro_state.l0_sstables {
+            let sst = ro_state.sstables[sst_id].clone();
+            let sst_iter =
+                SsTableIterator::create_and_seek_to_key(sst.clone(), KeySlice::from_slice(key))?;
+            if sst_iter.key().raw_ref() == key {
+                if sst_iter.value().is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(Bytes::copy_from_slice(sst_iter.value())));
             }
         }
         Ok(None)
@@ -371,7 +394,31 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+        let _state_lock_guard = self.state_lock.lock();
+        // quick drop read-lock after Arc::clone the table
+        let imm_table_to_be_flushed = {
+            let guard = self.state.read();
+            guard.imm_memtables.last().map(|t| t.clone())
+        };
+        if imm_table_to_be_flushed.is_none() {
+            return Ok(());
+        }
+        let imm_table_to_be_flushed = imm_table_to_be_flushed.unwrap(); // safe unwrap due to above check
+        let mut sst_builder = SsTableBuilder::new(self.options.block_size);
+        imm_table_to_be_flushed.flush(&mut sst_builder)?;
+        let sst_id = imm_table_to_be_flushed.id();
+        let mut sst_fname = self.path.clone();
+        sst_fname.push(format!("{sst_id}.sst"));
+        let sst = sst_builder.build(sst_id, Some(self.block_cache.clone()), &sst_fname)?;
+        {
+            let mut guard = self.state.write();
+            let mut snapshot = guard.as_ref().clone();
+            snapshot.imm_memtables.pop();
+            snapshot.l0_sstables.insert(0, sst_id);
+            snapshot.sstables.insert(sst_id, Arc::new(sst));
+            *guard = Arc::new(snapshot);
+        }
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {
@@ -385,13 +432,26 @@ impl LsmStorageInner {
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let ro_state = self.state.read();
-        let mut sst_iters = vec![Box::new(ro_state.memtable.scan(lower, upper))];
+        let ro_state = {
+            let guard = self.state.read(); // ro for read-only
+            Arc::clone(&guard)
+        };
+        let mut mem_iters = vec![Box::new(ro_state.memtable.scan(lower, upper))];
         for imm_table in &ro_state.imm_memtables {
-            sst_iters.push(Box::new(imm_table.scan(lower, upper)));
+            mem_iters.push(Box::new(imm_table.scan(lower, upper)));
         }
+        // handle sst_iters by self
+        let mut sst_iters = vec![];
+        for sst_idx in &ro_state.l0_sstables {
+            let sst = &ro_state.sstables[sst_idx];
+            sst_iters.push(Box::new(SsTableIterator::scan(sst.clone(), lower, upper)?));
+        }
+
         Ok(FusedIterator::new(LsmIterator::new(
-            MergeIterator::create(sst_iters),
+            TwoMergeIterator::create(
+                MergeIterator::create(mem_iters),
+                MergeIterator::create(sst_iters),
+            )?,
         )?))
     }
 }
