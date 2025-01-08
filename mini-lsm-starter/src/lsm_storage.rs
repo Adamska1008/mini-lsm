@@ -159,7 +159,15 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        let flush_thread = self.flush_thread.lock().take();
+        if let Some(handle) = flush_thread {
+            handle.join().unwrap();
+        }
+        let compaction_thread = self.compaction_thread.lock().take();
+        if let Some(handle) = compaction_thread {
+            handle.join().unwrap();
+        }
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
