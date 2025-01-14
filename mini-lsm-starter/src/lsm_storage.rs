@@ -315,8 +315,12 @@ impl LsmStorageInner {
                 return Ok(Some(value));
             }
         }
+        let key_hash = farmhash::hash32(key);
         for sst_id in &ro_state.l0_sstables {
             let sst = ro_state.sstables[sst_id].clone();
+            if sst.bloom.as_ref().is_some_and(|x| !x.may_contain(key_hash)) {
+                continue;
+            }
             let sst_iter =
                 SsTableIterator::create_and_seek_to_key(sst.clone(), KeySlice::from_slice(key))?;
             if sst_iter.key().raw_ref() == key {
@@ -380,23 +384,12 @@ impl LsmStorageInner {
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
         let n_sstid = self.next_sst_id();
-        let memtable = Arc::new(MemTable::create(n_sstid));
-        {
-            // state is immutable, so the only way is to create a new one
-            let mut state_guard = self.state.write();
-            let new_state = LsmStorageState {
-                memtable,
-                imm_memtables: {
-                    let mut imm_memtables = state_guard.imm_memtables.clone();
-                    imm_memtables.insert(0, state_guard.memtable.clone());
-                    imm_memtables
-                },
-                l0_sstables: state_guard.l0_sstables.clone(),
-                levels: state_guard.levels.clone(),
-                sstables: state_guard.sstables.clone(),
-            };
-            *state_guard = Arc::new(new_state);
-        }
+        // state is immutable, so the only way is to create a new one
+        let mut guard = self.state.write();
+        let mut new_state = guard.as_ref().clone();
+        new_state.imm_memtables.insert(0, guard.memtable.clone());
+        new_state.memtable = Arc::new(MemTable::create(n_sstid));
+        *guard = Arc::new(new_state);
         Ok(())
     }
 
