@@ -42,13 +42,27 @@ impl BlockBuilder {
             return false;
         }
         self.offsets.push(self.data.len() as u16);
-        self.data.put_u16_ne(key.len() as u16);
-        self.data.put(key.raw_ref());
-        self.data.put_u16_ne(value.len() as u16);
-        self.data.put(value);
         if self.first_key.is_empty() {
             self.first_key.set_from_slice(key);
+            self.data.put_u16_ne(key.len() as u16);
+            self.data.put(key.raw_ref());
+        } else {
+            // key prefix encoding
+            let key_overlap_len = self
+                .first_key
+                .raw_ref()
+                .iter()
+                .zip(key.raw_ref())
+                .take_while(|(c1, c2)| c1 == c2)
+                .count();
+            let rest_key = &key.raw_ref()[key_overlap_len..];
+            let rest_key_len = rest_key.len();
+            self.data.put_u16_ne(key_overlap_len as u16);
+            self.data.put_u16_ne(rest_key_len as u16);
+            self.data.put(rest_key);
         }
+        self.data.put_u16_ne(value.len() as u16);
+        self.data.put(value);
         true
     }
 

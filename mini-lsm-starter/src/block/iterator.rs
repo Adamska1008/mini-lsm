@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use bytes::Buf;
+
 use crate::key::{KeySlice, KeyVec};
 
 use super::Block;
@@ -23,12 +25,19 @@ pub struct BlockIterator {
 
 impl BlockIterator {
     pub(crate) fn new(block: Arc<Block>) -> Self {
+        // extract first_key
+        let mut data = &block.data[..];
+        let key_len = data.get_u16_ne() as usize;
+        let key = data
+            .get(..key_len)
+            .expect("first key should be decoded smoothly")
+            .to_vec();
         Self {
             block,
             key: KeyVec::new(),
             value_range: (0, 0),
             idx: 0,
-            first_key: KeyVec::new(),
+            first_key: KeyVec::from_vec(key),
         }
     }
 
@@ -63,26 +72,44 @@ impl BlockIterator {
     }
 
     fn extract_key(&self, idx: usize) -> KeyVec {
-        let data = &self.block.data;
+        if idx == 0 {
+            return self.first_key.clone();
+        }
         let offset = self.block.offsets[idx] as usize;
-        let key_len_bytes = &data[offset..(offset + 2)];
-        let key_len = u16::from_ne_bytes([key_len_bytes[0], key_len_bytes[1]]) as usize;
-        let key_bytes = &data[(offset + 2)..(offset + 2 + key_len)];
-        KeyVec::from_vec(key_bytes.to_vec())
+        let mut data = &self.block.data[offset..];
+        let key_overlap_len = data.get_u16_ne();
+        let rest_key_len = data.get_u16_ne();
+        let prefix = &self.first_key.raw_ref()[..key_overlap_len as usize];
+        let rest_key = data
+            .get(..rest_key_len as usize)
+            .expect("key range should not out of bounds.");
+        KeyVec::from_vec([prefix, rest_key].concat())
     }
 
-    fn extract_value_range(&self, idx: usize, key: KeySlice) -> (usize, usize) {
-        let data = &self.block.data;
-        let offset = self.block.offsets[idx] as usize + 2 + key.len();
-        let value_len_bytes = &data[offset..(offset + 2)];
-        let value_len = u16::from_ne_bytes([value_len_bytes[0], value_len_bytes[1]]) as usize;
-        (offset + 2, offset + 2 + value_len)
+    fn extract_value_range(&self, idx: usize) -> (usize, usize) {
+        if idx == 0 {
+            let mut data = &self.block.data[..];
+            let key_len = data.get_u16_ne() as usize;
+            let (_, mut data) = data.split_at(key_len);
+            let value_len = data.get_u16_ne() as usize;
+            return (2 + key_len + 2, 2 + key_len + 2 + value_len);
+        }
+        let offset = self.block.offsets[idx] as usize;
+        let mut data = &self.block.data[offset..];
+        let key_overlap_len = data.get_u16_ne() as usize;
+        let rest_key_len = data.get_u16_ne() as usize;
+        let (_, mut data) = data.split_at(rest_key_len);
+        let value_len = data.get_u16_ne() as usize;
+        (
+            offset + 4 + rest_key_len + 2,
+            offset + 4 + rest_key_len + 2 + value_len,
+        )
     }
 
     /// Seeks to the first key in the block.
     pub fn seek_to_first(&mut self) {
         self.key = self.extract_key(0);
-        self.value_range = self.extract_value_range(0, self.key.as_key_slice());
+        self.value_range = self.extract_value_range(0);
         self.idx = 0;
         self.first_key = self.key.clone();
     }
@@ -98,7 +125,7 @@ impl BlockIterator {
             return;
         }
         self.key = self.extract_key(self.idx);
-        self.value_range = self.extract_value_range(self.idx, self.key.as_key_slice());
+        self.value_range = self.extract_value_range(self.idx);
     }
 
     /// Seek to the first key that >= `key`.
