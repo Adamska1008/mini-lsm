@@ -393,6 +393,19 @@ impl LsmStorageInner {
         Ok(())
     }
 
+    // does not hold any locks.
+    // purely functional, maps the mem_table to a SST
+    // refer to self for generating sst_id, use block_cache, save path, and block size
+    pub(crate) fn flush_single_memtable(&self, mem_table: &MemTable) -> Result<Arc<SsTable>> {
+        let sst_id = mem_table.id();
+        let mut sst_fname = self.path.clone();
+        sst_fname.push(format!("{sst_id}.sst"));
+        let mut sst_builder = SsTableBuilder::new(self.options.block_size);
+        mem_table.flush(&mut sst_builder)?;
+        let sst = sst_builder.build(sst_id, Some(self.block_cache.clone()), sst_fname)?;
+        Ok(Arc::new(sst))
+    }
+
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
         let _state_lock_guard = self.state_lock.lock();
@@ -405,18 +418,13 @@ impl LsmStorageInner {
             return Ok(());
         }
         let imm_table_to_be_flushed = imm_table_to_be_flushed.unwrap(); // safe unwrap due to above check
-        let mut sst_builder = SsTableBuilder::new(self.options.block_size);
-        imm_table_to_be_flushed.flush(&mut sst_builder)?;
-        let sst_id = imm_table_to_be_flushed.id();
-        let mut sst_fname = self.path.clone();
-        sst_fname.push(format!("{sst_id}.sst"));
-        let sst = sst_builder.build(sst_id, Some(self.block_cache.clone()), &sst_fname)?;
+        let sst = self.flush_single_memtable(&imm_table_to_be_flushed)?;
         {
             let mut guard = self.state.write();
             let mut snapshot = guard.as_ref().clone();
             snapshot.imm_memtables.pop();
-            snapshot.l0_sstables.insert(0, sst_id);
-            snapshot.sstables.insert(sst_id, Arc::new(sst));
+            snapshot.l0_sstables.insert(0, sst.sst_id());
+            snapshot.sstables.insert(sst.sst_id(), Arc::clone(&sst));
             *guard = Arc::new(snapshot);
         }
         Ok(())
