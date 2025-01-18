@@ -5,7 +5,6 @@ mod builder;
 mod iterator;
 
 use std::fs::File;
-use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 

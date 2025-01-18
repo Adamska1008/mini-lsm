@@ -29,7 +29,7 @@ pub struct SsTableBuilder {
 }
 
 fn vec_u8_to_keybytes(v: Vec<u8>) -> KeyBytes {
-    let bytes = Bytes::from_iter(v.into_iter());
+    let bytes = Bytes::from_iter(v);
     KeyBytes::from_bytes(bytes)
 }
 
@@ -75,8 +75,8 @@ impl SsTableBuilder {
 
     /// dump the block from blockbuilder into data
     fn flush_current_block(&mut self) {
-        let old_first_key = std::mem::replace(&mut self.first_key, vec![]);
-        let old_last_key = std::mem::replace(&mut self.last_key, vec![]);
+        let old_first_key = std::mem::take(&mut self.first_key);
+        let old_last_key = std::mem::take(&mut self.last_key);
         let old_metadata = BlockMeta {
             offset: self.data.len(),
             first_key: vec_u8_to_keybytes(old_first_key),

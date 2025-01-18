@@ -1,7 +1,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::{ops::Bound, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::{Ok, Result};
 
@@ -22,7 +22,7 @@ pub struct SstConcatIterator {
 impl SstConcatIterator {
     pub fn create_and_seek_to_first(sstables: Vec<Arc<SsTable>>) -> Result<Self> {
         // not using `map` because of error handling
-        let current = if let Some(sst) = sstables.get(0) {
+        let current = if let Some(sst) = sstables.first() {
             Some(SsTableIterator::create_and_seek_to_first(sst.clone())?)
         } else {
             None

@@ -303,20 +303,21 @@ impl LsmStorageInner {
             Arc::clone(&guard)
         };
         if let Some(value) = ro_state.memtable.get(key) {
-            if value.len() == 0 {
+            if value.is_empty() {
                 return Ok(None);
             }
             return Ok(Some(value));
         }
         for mem_t in &ro_state.imm_memtables {
             if let Some(value) = mem_t.get(key) {
-                if value.len() == 0 {
+                if value.is_empty() {
                     return Ok(None);
                 }
                 return Ok(Some(value));
             }
         }
         let key_hash = farmhash::hash32(key);
+        // this closure returns `None` when key is deleted, and `Err` when not found
         let check_sst = |sst_id: usize| -> Result<Option<Bytes>> {
             let sst = ro_state.sstables[&sst_id].clone();
             if sst.bloom.as_ref().is_some_and(|b| !b.may_contain(key_hash)) {
@@ -426,7 +427,7 @@ impl LsmStorageInner {
         // quick drop read-lock after Arc::clone the table
         let imm_table_to_be_flushed = {
             let guard = self.state.read();
-            guard.imm_memtables.last().map(|t| t.clone())
+            guard.imm_memtables.last().cloned()
         };
         if imm_table_to_be_flushed.is_none() {
             return Ok(());

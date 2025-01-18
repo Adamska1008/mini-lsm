@@ -32,7 +32,7 @@ impl SsTableIterator {
 
     pub fn scan(table: Arc<SsTable>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<Self> {
         let mut slf = Self::create_and_seek_to_first(table)?;
-        slf.end_bound = upper.map(|bytes| Bytes::copy_from_slice(bytes));
+        slf.end_bound = upper.map(Bytes::copy_from_slice);
         match lower {
             Bound::Included(key) => slf.seek_to_key(KeySlice::from_slice(key))?,
             Bound::Excluded(key) => {

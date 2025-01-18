@@ -140,7 +140,7 @@ impl LsmStorageInner {
                         merge_iterator.next()?;
                         continue;
                     }
-                    mem_table.put(&key.raw_ref(), value)?;
+                    mem_table.put(key.raw_ref(), value)?;
                     if mem_table.approximate_size() >= target_sst_size {
                         let sst = self.flush_single_memtable(&mem_table)?;
                         compacted_ssts.push(sst);
