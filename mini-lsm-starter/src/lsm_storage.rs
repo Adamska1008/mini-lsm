@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::{fs, vec};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -16,6 +16,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
@@ -316,10 +317,10 @@ impl LsmStorageInner {
             }
         }
         let key_hash = farmhash::hash32(key);
-        for sst_id in &ro_state.l0_sstables {
-            let sst = ro_state.sstables[sst_id].clone();
-            if sst.bloom.as_ref().is_some_and(|x| !x.may_contain(key_hash)) {
-                continue;
+        let check_sst = |sst_id: usize| -> Result<Option<Bytes>> {
+            let sst = ro_state.sstables[&sst_id].clone();
+            if sst.bloom.as_ref().is_some_and(|b| !b.may_contain(key_hash)) {
+                bail!("Key Not found");
             }
             let sst_iter =
                 SsTableIterator::create_and_seek_to_key(sst.clone(), KeySlice::from_slice(key))?;
@@ -328,6 +329,19 @@ impl LsmStorageInner {
                     return Ok(None);
                 }
                 return Ok(Some(Bytes::copy_from_slice(sst_iter.value())));
+            }
+            bail!("Key Not found");
+        };
+        for sst_id in &ro_state.l0_sstables {
+            if let Ok(opt_value) = check_sst(*sst_id) {
+                return Ok(opt_value);
+            }
+        }
+        for (_, level) in &ro_state.levels {
+            for sst_id in level {
+                if let Ok(opt_value) = check_sst(*sst_id) {
+                    return Ok(opt_value);
+                }
             }
         }
         Ok(None)
@@ -450,17 +464,37 @@ impl LsmStorageInner {
             mem_iters.push(Box::new(imm_table.scan(lower, upper)));
         }
         // handle sst_iters by self
-        let mut sst_iters = vec![];
+        let mut l0_sst_iter = vec![];
         for sst_idx in &ro_state.l0_sstables {
             let sst = &ro_state.sstables[sst_idx];
-            sst_iters.push(Box::new(SsTableIterator::scan(sst.clone(), lower, upper)?));
+            l0_sst_iter.push(Box::new(SsTableIterator::scan(sst.clone(), lower, upper)?));
         }
+        let mut l1_ssts = vec![];
+        for sst_idx in &ro_state.levels[0].1 {
+            let sst = &ro_state.sstables[sst_idx];
+            l1_ssts.push(sst.clone());
+        }
+        let concat_iter = match lower {
+            Bound::Included(key) => {
+                SstConcatIterator::create_and_seek_to_key(l1_ssts, KeySlice::from_slice(key))?
+            }
+            Bound::Excluded(key) => {
+                let mut iter =
+                    SstConcatIterator::create_and_seek_to_key(l1_ssts, KeySlice::from_slice(key))?;
+                if iter.is_valid() && iter.key().raw_ref() == key {
+                    iter.next()?;
+                }
+                iter
+            }
+            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_ssts)?,
+        };
 
-        Ok(FusedIterator::new(LsmIterator::new(
-            TwoMergeIterator::create(
-                MergeIterator::create(mem_iters),
-                MergeIterator::create(sst_iters),
-            )?,
-        )?))
+        let iter = TwoMergeIterator::create(
+            MergeIterator::create(mem_iters),
+            MergeIterator::create(l0_sst_iter),
+        )?;
+        let iter = TwoMergeIterator::create(iter, concat_iter)?;
+
+        Ok(FusedIterator::new(LsmIterator::new(iter)?))
     }
 }

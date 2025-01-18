@@ -19,7 +19,7 @@ use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::StorageIterator;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
 use crate::mem_table::MemTable;
-use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
+use crate::table::{SsTable, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CompactionTask {
@@ -168,7 +168,7 @@ impl LsmStorageInner {
         })?;
         let new_sst_ids: Vec<_> = compacted_ssts.iter().map(|s| s.sst_id()).collect();
         {
-            let _ = self.state_lock.lock();
+            let _lock = self.state_lock.lock();
             let mut state = self.state.write();
             let mut new_state = state.as_ref().clone();
             new_state
