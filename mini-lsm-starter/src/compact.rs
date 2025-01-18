@@ -4,7 +4,6 @@ mod leveled;
 mod simple_leveled;
 mod tiered;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
