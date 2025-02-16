@@ -47,6 +47,21 @@ impl SimpleLeveledCompactionController {
                 is_lower_level_bottom_level: false,
             });
         }
+        for level in 1..self.options.max_levels {
+            let level_idx = level - 1;
+            let current_ratio = snapshot.levels[level_idx + 1].1.len() as f32
+                / snapshot.levels[level_idx].1.len() as f32
+                * 100.;
+            if current_ratio < self.options.size_ratio_percent as f32 {
+                return Some(SimpleLeveledCompactionTask {
+                    upper_level: Some(level),
+                    upper_level_sst_ids: snapshot.levels[level_idx].1.clone(),
+                    lower_level: level + 1,
+                    lower_level_sst_ids: snapshot.levels[level_idx + 1].1.clone(),
+                    is_lower_level_bottom_level: level + 1 == self.options.max_levels,
+                });
+            }
+        }
         return None;
     }
 
@@ -72,7 +87,19 @@ impl SimpleLeveledCompactionController {
             (retained, removed)
         }
         if let Some(upper_level) = task.upper_level {
-            todo!()
+            let (upper_retained, upper_removed) = filter_ssts(
+                &snapshot.levels[upper_level - 1].1,
+                &task.upper_level_sst_ids,
+            );
+            ns.levels[upper_level - 1].1 = upper_retained;
+            removed.extend(upper_removed);
+            let (lower_retained, lower_removed) = filter_ssts(
+                &snapshot.levels[task.lower_level - 1].1,
+                &task.lower_level_sst_ids,
+            );
+            ns.levels[task.lower_level - 1].1 = lower_retained;
+            removed.extend(lower_removed);
+            ns.levels[task.lower_level - 1].1.extend(output);
         } else {
             let (l0_retained, l0_removed) =
                 filter_ssts(&snapshot.l0_sstables, &task.upper_level_sst_ids);
