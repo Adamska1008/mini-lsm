@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::lsm_storage::LsmStorageState;
@@ -33,9 +35,19 @@ impl SimpleLeveledCompactionController {
     /// Returns `None` if no compaction needs to be scheduled. The order of SSTs in the compaction task id vector matters.
     pub fn generate_compaction_task(
         &self,
-        _snapshot: &LsmStorageState,
+        snapshot: &LsmStorageState,
     ) -> Option<SimpleLeveledCompactionTask> {
-        unimplemented!()
+        // check l0 cond
+        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            return Some(SimpleLeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: snapshot.l0_sstables.clone(),
+                lower_level: 1,
+                lower_level_sst_ids: snapshot.levels[0].1.clone(),
+                is_lower_level_bottom_level: false,
+            });
+        }
+        return None;
     }
 
     /// Apply the compaction result.
@@ -47,10 +59,31 @@ impl SimpleLeveledCompactionController {
     /// in your implementation.
     pub fn apply_compaction_result(
         &self,
-        _snapshot: &LsmStorageState,
-        _task: &SimpleLeveledCompactionTask,
-        _output: &[usize],
+        snapshot: &LsmStorageState,
+        task: &SimpleLeveledCompactionTask,
+        output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        unimplemented!()
+        let mut ns = snapshot.clone();
+        let mut removed = vec![];
+        fn filter_ssts(sst_ids: &[usize], to_remove: &[usize]) -> (Vec<usize>, Vec<usize>) {
+            let to_remove_set: HashSet<_> = to_remove.iter().collect();
+            let (retained, removed): (Vec<_>, Vec<_>) =
+                sst_ids.iter().partition(|id| !to_remove_set.contains(id));
+            (retained, removed)
+        }
+        if let Some(upper_level) = task.upper_level {
+            todo!()
+        } else {
+            let (l0_retained, l0_removed) =
+                filter_ssts(&snapshot.l0_sstables, &task.upper_level_sst_ids);
+            ns.l0_sstables = l0_retained;
+            removed.extend(l0_removed);
+            let (l1_retained, l1_removed) =
+                filter_ssts(&snapshot.levels[0].1, &task.lower_level_sst_ids);
+            ns.levels[0].1 = l1_retained;
+            removed.extend(l1_removed);
+            ns.levels[0].1.extend(output);
+        }
+        (ns, removed)
     }
 }
